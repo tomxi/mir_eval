@@ -175,7 +175,8 @@ def _lca(intervals_hier, frame_size):
     return lca_matrix.tocsr()
 
 
-def _meet(intervals_hier, labels_hier, frame_size):
+## TODO
+def _meet(intervals_hier, labels_hier, frame_size, enforce_mono=False):
     """Compute the (sparse) least-common-ancestor (LCA) matrix for a
     hierarchical segmentation.
 
@@ -225,9 +226,14 @@ def _meet(intervals_hier, labels_hier, frame_size):
         for seg_i, seg_j in zip(*np.where(int_agree)):
             idx_i = slice(*list(int_frames[seg_i]))
             idx_j = slice(*list(int_frames[seg_j]))
-            meet_matrix[idx_i, idx_j] = level
-            if seg_i != seg_j:
-                meet_matrix[idx_j, idx_i] = level
+
+            # check if the segments' parents has matching labeling
+            matching_parents = (meet_matrix[idx_i, idx_j] == level - 1).all()
+            # we only record meeting at a level if the segments' parents have matching labeling when monotonicity is enforced.
+            if matching_parents or not enforce_mono:
+                meet_matrix[idx_i, idx_j] = level
+                if seg_i != seg_j:
+                    meet_matrix[idx_j, idx_i] = level
 
     return scipy.sparse.csr_matrix(meet_matrix)
 
@@ -446,13 +452,30 @@ def validate_hier_intervals(intervals_hier):
     # Synthesize a label array for the top layer.
     label_top = util.generate_labels(intervals_hier[0])
 
-    boundaries = set(util.intervals_to_boundaries(intervals_hier[0]))
-
-    for level, intervals in enumerate(intervals_hier[1:], 1):
+    for intervals in intervals_hier[1:]:
         # Make sure this level is consistent with the root
         label_current = util.generate_labels(intervals)
         validate_structure(intervals_hier[0], label_top, intervals, label_current)
 
+    check_monotonic_boundaries(intervals_hier)
+
+
+def check_monotonic_boundaries(intervals_hier):
+    """Check that a hierarchical annotation has monotnoic boundaries.
+
+    Parameters
+    ----------
+    intervals_hier : ordered list of segmentations
+
+    Returns
+    -------
+    bool
+        True if the annotation has monotnoic boundaries, False otherwise
+    """
+    result = True
+    boundaries = set(util.intervals_to_boundaries(intervals_hier[0]))
+
+    for level, intervals in enumerate(intervals_hier[1:], 1):
         # Make sure all previous boundaries are accounted for
         new_bounds = set(util.intervals_to_boundaries(intervals))
 
@@ -460,7 +483,25 @@ def validate_hier_intervals(intervals_hier):
             warnings.warn(
                 "Segment hierarchy is inconsistent " "at level {:d}".format(level)
             )
+            result = False
         boundaries |= new_bounds
+    return result
+
+
+def check_monotonic_labels(intervals_hier):
+    """Check that a hierarchical annotation has monotnoic labels.
+
+    Parameters
+    ----------
+    intervals_hier : ordered list of segmentations
+
+    Returns
+    -------
+    bool
+        True if the annotation has monotnoic labels, False otherwise
+    """
+    ## TODO Check if the monotonic anno meet mat and the max depth meet mat is the same.
+    return True
 
 
 def tmeasure(
@@ -552,6 +593,7 @@ def lmeasure(
     estimated_labels_hier,
     frame_size=0.1,
     beta=1.0,
+    enforce_mono=False,
 ):
     """Compute the tree measures for hierarchical segment annotations.
 
@@ -604,8 +646,18 @@ def lmeasure(
     validate_hier_intervals(estimated_intervals_hier)
 
     # Build the least common ancestor matrices
-    ref_meet = _meet(reference_intervals_hier, reference_labels_hier, frame_size)
-    est_meet = _meet(estimated_intervals_hier, estimated_labels_hier, frame_size)
+    ref_meet = _meet(
+        reference_intervals_hier,
+        reference_labels_hier,
+        frame_size,
+        enforce_mono=enforce_mono,
+    )
+    est_meet = _meet(
+        estimated_intervals_hier,
+        estimated_labels_hier,
+        frame_size,
+        enforce_mono=enforce_mono,
+    )
 
     # Compute precision and recall
     l_recall = _gauc(ref_meet, est_meet, True, None)
